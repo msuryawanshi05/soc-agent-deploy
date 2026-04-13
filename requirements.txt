@@ -1,0 +1,8 @@
+# SOC Platform Agent Dependencies
+psutil>=5.8.0
+python-dotenv>=0.19.0
+cryptography>=3.4.0
+PyJWT>=2.1.0
+requests>=2.25.1
+pywin32>=301; sys_platform == 'win32'
+wmi>=1.5.1; sys_platform == 'win32'
