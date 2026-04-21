@@ -41,6 +41,7 @@ class OSAbstraction:
                 "/var/log/kern.log"
             ]
         elif self.is_windows:
+            # Windows Event Logs handled separately via pywin32
             return []
         return []
     
@@ -80,7 +81,7 @@ class OSAbstraction:
                     f"{home}/.config/BraveSoftware/Brave-Browser/Default/History",
                     f"{home}/snap/brave/current/.config/BraveSoftware/Brave-Browser/Default/History"
                 ],
-                "edge": []
+                "edge": []  # Not common on Linux
             }
         elif self.is_windows:
             appdata_local = os.getenv('LOCALAPPDATA', f"{home}\\AppData\\Local")
@@ -88,16 +89,19 @@ class OSAbstraction:
             
             return {
                 "chrome": [
-                    f"{appdata_local}\\Google\\Chrome\\User Data\\Default\\History"
+                    f"{appdata_local}\\Google\\Chrome\\User Data\\Default\\History",
+                    f"{appdata_local}\\Google\\Chrome\\User Data\\Profile *\\History"
                 ],
                 "firefox": [
                     f"{appdata_roaming}\\Mozilla\\Firefox\\Profiles\\*\\places.sqlite"
                 ],
                 "brave": [
-                    f"{appdata_local}\\BraveSoftware\\Brave-Browser\\User Data\\Default\\History"
+                    f"{appdata_local}\\BraveSoftware\\Brave-Browser\\User Data\\Default\\History",
+                    f"{appdata_local}\\BraveSoftware\\Brave-Browser\\User Data\\Profile *\\History"
                 ],
                 "edge": [
-                    f"{appdata_local}\\Microsoft\\Edge\\User Data\\Default\\History"
+                    f"{appdata_local}\\Microsoft\\Edge\\User Data\\Default\\History",
+                    f"{appdata_local}\\Microsoft\\Edge\\User Data\\Profile *\\History"
                 ]
             }
         return {}
@@ -164,13 +168,15 @@ class OSAbstraction:
     def normalize_path(self, path: str) -> str:
         """Convert path to OS-appropriate format"""
         if self.is_windows:
+            # Convert forward slashes to backslashes
             return path.replace('/', '\\')
         else:
+            # Convert backslashes to forward slashes
             return path.replace('\\', '/')
     
     def get_db_path(self, relative_path: str = "soc_platform.db") -> str:
         """Get platform-appropriate database path"""
-        # Note: In standalone agent, path is relative to script root
+        # Use absolute path to avoid issues with working directory
         base_dir = Path(__file__).parent.parent
         return str(base_dir / relative_path)
     

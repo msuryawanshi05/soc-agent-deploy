@@ -8,6 +8,7 @@ import ssl
 import socket
 import hashlib
 import secrets
+import hmac
 import jwt
 import json
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,9 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 import base64
 import os
+
+PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256"
+PASSWORD_HASH_ITERATIONS = int(os.getenv("PASSWORD_HASH_ITERATIONS", "390000"))
 
 class CertificateManager:
     """Manages TLS certificates for secure communication"""
@@ -123,39 +127,60 @@ class FieldEncryption:
     """Encrypt sensitive fields in database using AES-256"""
     
     def __init__(self, key: str):
+        # Derive 32-byte key from string
         self.key = hashlib.sha256(key.encode()).digest()
     
     def encrypt(self, plaintext: str) -> str:
+        """Encrypt string and return base64-encoded ciphertext"""
         if not plaintext:
             return ""
+        
+        # Generate random IV
         iv = os.urandom(16)
+        
+        # Pad plaintext to multiple of 16 bytes
         padded = self._pad(plaintext.encode())
+        
+        # Encrypt
         cipher = Cipher(algorithms.AES(self.key), modes.CBC(iv), backend=default_backend())
         encryptor = cipher.encryptor()
         ciphertext = encryptor.update(padded) + encryptor.finalize()
+        
+        # Return IV + ciphertext as base64
         return base64.b64encode(iv + ciphertext).decode()
     
     def decrypt(self, ciphertext: str) -> str:
+        """Decrypt base64-encoded ciphertext and return plaintext"""
         if not ciphertext:
             return ""
+        
         try:
+            # Decode base64
             data = base64.b64decode(ciphertext)
+            
+            # Extract IV and ciphertext
             iv = data[:16]
             encrypted = data[16:]
+            
+            # Decrypt
             cipher = Cipher(algorithms.AES(self.key), modes.CBC(iv), backend=default_backend())
             decryptor = cipher.decryptor()
             padded = decryptor.update(encrypted) + decryptor.finalize()
+            
+            # Unpad and decode
             return self._unpad(padded).decode()
         except Exception as e:
-            return ciphertext
+            return ciphertext  # Return as-is if decryption fails
     
     @staticmethod
     def _pad(data: bytes) -> bytes:
+        """PKCS7 padding"""
         padding_length = 16 - (len(data) % 16)
         return data + bytes([padding_length] * padding_length)
     
     @staticmethod
     def _unpad(data: bytes) -> bytes:
+        """Remove PKCS7 padding"""
         padding_length = data[-1]
         return data[:-padding_length]
 
@@ -164,36 +189,68 @@ class SecureSocket:
     
     @staticmethod
     def create_server_socket(host: str, port: int, cert_file: str, key_file: str) -> ssl.SSLSocket:
+        """Create TLS server socket"""
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(cert_file, key_file)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
+        
+        # Create and bind socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
         sock.listen(5)
+        
         return context.wrap_socket(sock, server_side=True)
     
     @staticmethod
     def create_client_socket(host: str, port: int, ca_file: Optional[str] = None) -> ssl.SSLSocket:
+        """Create TLS client socket"""
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        
         if ca_file:
             context.load_verify_locations(ca_file)
         else:
+            # For self-signed certs, don't verify
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
+        
         context.minimum_version = ssl.TLSVersion.TLSv1_2
+        
+        # Create connection
         sock = socket.create_connection((host, port))
         return context.wrap_socket(sock, server_hostname=host)
 
 def hash_password(password: str) -> str:
+    """Hash password using PBKDF2-SHA256."""
     salt = secrets.token_hex(16)
-    pwdhash = hashlib.sha256((password + salt).encode()).hexdigest()
-    return f"{salt}${pwdhash}"
+    pwdhash = base64.b64encode(
+        hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            PASSWORD_HASH_ITERATIONS,
+        )
+    ).decode("ascii").strip()
+    return f"{PASSWORD_HASH_ALGORITHM}${PASSWORD_HASH_ITERATIONS}${salt}${pwdhash}"
 
 def verify_password(password: str, stored_hash: str) -> bool:
+    """Verify password against both PBKDF2 and legacy salted-SHA256 hashes."""
     try:
-        salt, pwdhash = stored_hash.split('$')
-        check_hash = hashlib.sha256((password + salt).encode()).hexdigest()
-        return check_hash == pwdhash
-    except Exception as e:
+        if stored_hash.startswith(f"{PASSWORD_HASH_ALGORITHM}$"):
+            _, iterations, salt, pwdhash = stored_hash.split("$", 3)
+            check_hash = base64.b64encode(
+                hashlib.pbkdf2_hmac(
+                    "sha256",
+                    password.encode("utf-8"),
+                    salt.encode("utf-8"),
+                    int(iterations),
+                )
+            ).decode("ascii").strip()
+            return hmac.compare_digest(check_hash, pwdhash)
+
+        salt, pwdhash = stored_hash.split("$", 1)
+        check_hash = hashlib.sha256((password + salt).encode("utf-8")).hexdigest()
+        return hmac.compare_digest(check_hash, pwdhash)
+    except Exception:
         return False
+
