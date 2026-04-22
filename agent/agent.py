@@ -17,36 +17,11 @@ from shared.config import (
     AGENT_ID,
     AGENT_HOSTNAME,
     AGENT_SEND_INTERVAL,
-import os
-import sys
-import time
-import json
-import platform
-import socket
-
-CURRENT_DIR = os.path.dirname(__file__)
-PROJECT_ROOT = os.path.join(CURRENT_DIR, "..")
-sys.path.append(CURRENT_DIR)
-sys.path.append(PROJECT_ROOT)
-from shared.logger import get_logger
-logger = get_logger("Agent")
-from shared.config import (
-    MANAGER_HOST,
-    MANAGER_PORT,
-    AGENT_ID,
-    AGENT_HOSTNAME,
-    AGENT_SEND_INTERVAL,
     AGENT_HEARTBEAT_INTERVAL,
 )
 from shared.models import LogEvent
 from shared.os_abstraction import get_os
 from shared.security import SecureSocket
-
-# --- Auto-updater (runs before monitors load) ---
-try:
-    import updater as _updater
-except ImportError:
-    _updater = None  # updater.py not present — skip silently
 
 # --- Platform-conditional imports (no cross-contamination) ---
 _PLATFORM = platform.system()   # 'Windows' | 'Linux' | 'Darwin'
@@ -213,16 +188,5 @@ class Agent:
                 time.sleep(5)
 
 if __name__ == "__main__":
-    # ── Auto-update check ────────────────────────────────────────────────────
-    # Runs silently before any monitors are initialised.
-    # If a new commit is pulled, exits with 0 so the service manager
-    # (systemd / Windows SCM / launchd) restarts us on the updated code.
-    if _updater is not None:
-        try:
-            if _updater.run_update_check():
-                sys.exit(0)   # clean exit → service manager restarts
-        except Exception as _ue:
-            logger.warning(f"Update check raised unexpectedly: {_ue} — continuing.")
-    # ── Normal startup ────────────────────────────────────────────────────────
     agent = Agent()
     agent.run()
