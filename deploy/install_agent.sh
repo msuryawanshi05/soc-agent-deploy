@@ -1,13 +1,9 @@
 #!/bin/bash
 # ============================================================
 #  SOC Agent — Ubuntu / Linux Installer (Protected Install)
-#  Must be run as root:  sudo bash install_agent.sh <MANAGER_IP> <AGENT_NUM> <MACHINE_NAME>
-#  Example:              sudo bash install_agent.sh 192.168.1.100 5 lab-machine-5
-#
-#  Installs to: /opt/soc-agent/  (root:root, chmod 700 — users get Permission denied)
 # ============================================================
 
-set -e
+set -eE
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -16,69 +12,142 @@ NC='\033[0m'
 
 SERVICE_NAME="soc-agent"
 INSTALL_DIR="/opt/soc-agent"
-REPO_URL="https://github.com/msuryawanshi05/soc-agent-deploy.git"
+LOG_FILE="$INSTALL_DIR/install.log"
+MIN_DISK_MB=200
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_ROOT="$(dirname "$SCRIPT_DIR")"
+ROLLED_BACK=false
 
-# ── Root check ────────────────────────────────────────────────────────────────
+log() {
+    local color="${2:-$NC}"
+    local ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    local line="[$ts] $1"
+    echo -e "${color}${line}${NC}"
+    if [ -d "$INSTALL_DIR" ]; then
+        echo "$line" >> "$LOG_FILE" 2>/dev/null || true
+    fi
+}
+
+rollback() {
+    if [ "$ROLLED_BACK" = "true" ]; then return; fi
+    ROLLED_BACK=true
+    log "ERROR: Installation failed — rolling back..." "$RED"
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+    rm -f /etc/systemd/system/${SERVICE_NAME}.service
+    systemctl daemon-reload 2>/dev/null || true
+    chmod -R 755 "$INSTALL_DIR" 2>/dev/null || true
+    rm -rf "$INSTALL_DIR"
+    log "Rollback complete." "$YELLOW"
+}
+
+trap 'EC=$?; if [ $EC -ne 0 ] && [ "$ROLLED_BACK" = "false" ]; then rollback; fi' EXIT ERR
+
 if [ "$(id -u)" != "0" ]; then
     echo -e "${RED}ERROR: Must run as root. Use: sudo bash $0 $*${NC}"
     exit 1
 fi
 
-# ── Argument check ────────────────────────────────────────────────────────────
-if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
-    echo "Usage: sudo bash $0 <MANAGER_IP> <AGENT_NUMBER> <MACHINE_NAME>"
-    echo "Example: sudo bash $0 192.168.1.100 5 lab-machine-5"
-    exit 1
+if [ "$1" = "--uninstall" ]; then
+    mkdir -p "$INSTALL_DIR"
+    log "=== SOC Agent Uninstall ===" "$YELLOW"
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+    rm -f /etc/systemd/system/${SERVICE_NAME}.service
+    systemctl daemon-reload 2>/dev/null || true
+    log "Service removed." "$GREEN"
+    chmod -R 755 "$INSTALL_DIR" 2>/dev/null || true
+    rm -rf "$INSTALL_DIR"
+    log "Install directory removed." "$GREEN"
+    log "✅ SOC Agent fully uninstalled." "$GREEN"
+    ROLLED_BACK=true
+    exit 0
 fi
 
-MANAGER_IP=$1
-AGENT_NUM=$2
-MACHINE_NAME=$3
-AGENT_ID="agent-$(printf '%03d' $AGENT_NUM)"
-
-echo -e "${GREEN}═══════════════════════════════════════════${NC}"
+echo -e "\n${GREEN}═══════════════════════════════════════════${NC}"
 echo -e "${GREEN}  SOC Agent Installer (Ubuntu — Protected)${NC}"
-echo -e "${GREEN}═══════════════════════════════════════════${NC}"
-echo -e "${YELLOW}Manager IP :${NC} $MANAGER_IP"
-echo -e "${YELLOW}Agent ID   :${NC} $AGENT_ID"
-echo -e "${YELLOW}Hostname   :${NC} $MACHINE_NAME"
-echo -e "${YELLOW}Install dir:${NC} $INSTALL_DIR"
+echo -e "${GREEN}═══════════════════════════════════════════${NC}\n"
 
-# ── Step 1: Auto-detect Python ────────────────────────────────────────────────
-echo -e "\n${GREEN}[1/7] Detecting Python...${NC}"
+AGENT_ID=""
+while [ -z "$AGENT_ID" ]; do
+    read -r -p "Enter Agent ID (e.g. agent-lab-01): " AGENT_ID
+    AGENT_ID="$(echo "$AGENT_ID" | xargs)"
+done
+
+SYS_HOSTNAME="$(hostname)"
+read -r -p "Enter Agent Hostname (e.g. LAB-PC-01) [$SYS_HOSTNAME]: " HOSTNAME_INPUT
+HOSTNAME_INPUT="$(echo "$HOSTNAME_INPUT" | xargs)"
+MACHINE_NAME="${HOSTNAME_INPUT:-$SYS_HOSTNAME}"
+
+read -r -p "Enter Manager IP [139.59.48.159]: " IP_INPUT
+IP_INPUT="$(echo "$IP_INPUT" | xargs)"
+MANAGER_IP="${IP_INPUT:-139.59.48.159}"
+
+MANAGER_PORT=9000
+
+echo -e "\n${YELLOW}─────────────────────────────────${NC}"
+echo " Agent ID      : $AGENT_ID"
+echo " Hostname      : $MACHINE_NAME"
+echo " Manager IP    : $MANAGER_IP"
+echo " Manager Port  : $MANAGER_PORT"
+echo -e "${YELLOW}─────────────────────────────────${NC}\n"
+
+read -r -p "Proceed with installation? [Y/n]: " CONFIRM
+if [ "$CONFIRM" = "n" ] || [ "$CONFIRM" = "N" ]; then
+    echo -e "${YELLOW}Installation aborted.${NC}"
+    ROLLED_BACK=true
+    exit 0
+fi
+
+mkdir -p "$INSTALL_DIR"
+
+log "[1/10] Checking disk space..."
+FREE_MB=$(df -BM "$INSTALL_DIR" | awk 'NR==2{gsub("M","",$4); print $4}')
+if [ -n "$FREE_MB" ] && [ "$FREE_MB" -lt "$MIN_DISK_MB" ]; then
+    log "ERROR: Insufficient disk space: need ${MIN_DISK_MB}MB, have ${FREE_MB}MB." "$RED"
+    exit 1
+fi
+log "    Free space: ${FREE_MB}MB ✓" "$GREEN"
+
+log "[2/10] Checking existing installation..."
+ALREADY_INSTALLED=false
+if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || [ -d "$INSTALL_DIR/agent" ]; then
+    ALREADY_INSTALLED=true
+fi
+if [ "$ALREADY_INSTALLED" = "true" ]; then
+    read -r -p "    SOC Agent already installed. Reinstall? [y/N] " response
+    if [[ ! "$response" =~ ^[Yy]$ ]]; then
+        log "Skipping — existing installation kept." "$YELLOW"
+        ROLLED_BACK=true
+        exit 0
+    fi
+    log "    Proceeding with reinstall..." "$YELLOW"
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+else
+    log "    No existing installation found." "$GREEN"
+fi
+
+log "[3/10] Detecting Python..."
 PYTHON=$(which python3 2>/dev/null || which python 2>/dev/null || true)
 if [ -z "$PYTHON" ]; then
-    echo -e "${RED}ERROR: Python 3 not found. Run: sudo apt install python3 python3-pip${NC}"
-    exit 1
+    log "    Python not found — installing via apt..." "$YELLOW"
+    apt-get update -q
+    apt-get install -y python3 python3-pip -q
+    PYTHON=$(which python3)
 fi
-echo -e "      Found: $PYTHON ($($PYTHON --version 2>&1))"
+log "    Python: $PYTHON" "$GREEN"
 
-# ── Step 2: Check / install Git ──────────────────────────────────────────────
-echo -e "${GREEN}[2/7] Checking Git...${NC}"
-if ! command -v git &>/dev/null; then
-    echo -e "      Git not found — installing..."
-    apt-get install -y git -q
-fi
-GIT=$(which git)
-echo -e "      Git: $GIT ($(git --version))"
-
-# ── Step 3: Clone / update install directory ──────────────────────────────────
-echo -e "${GREEN}[3/7] Setting up install directory ($INSTALL_DIR)...${NC}"
-if [ -d "$INSTALL_DIR/.git" ]; then
-    # Already cloned — pull latest
-    git -C "$INSTALL_DIR" fetch origin --quiet
-    git -C "$INSTALL_DIR" reset --hard origin/main --quiet
-    echo -e "      Repository updated."
-else
-    rm -rf "$INSTALL_DIR"
-    git clone "$REPO_URL" "$INSTALL_DIR" --quiet
-    echo -e "      Repository cloned."
+log "[4/10] Copying agent files to $INSTALL_DIR..."
+for folder in agent shared database; do
+    if [ -d "$SOURCE_ROOT/$folder" ]; then
+        cp -r "$SOURCE_ROOT/$folder" "$INSTALL_DIR/"
+    fi
+done
+if [ -f "$SOURCE_ROOT/requirements.txt" ]; then
+    cp "$SOURCE_ROOT/requirements.txt" "$INSTALL_DIR/"
 fi
 
-# ── Step 4: Write .env ───────────────────────────────────────────────────────
-echo -e "${GREEN}[4/7] Writing .env configuration...${NC}"
 cat > "$INSTALL_DIR/.env" << EOF
-# Auto-generated by install_agent.sh for $MACHINE_NAME
 MANAGER_HOST=$MANAGER_IP
 MANAGER_PORT=9000
 AGENT_ID=$AGENT_ID
@@ -90,29 +159,19 @@ MONITOR_USB_DEVICES=true
 MONITOR_SHELL_COMMANDS=true
 MONITOR_PROCESSES=true
 EOF
-echo -e "      .env written."
+log "    .env written." "$GREEN"
 
-# ── Step 5: Install pip deps + compile .py → .pyc ────────────────────────────
-echo -e "${GREEN}[5/7] Installing dependencies and compiling to .pyc...${NC}"
+log "[5/10] Installing dependencies..."
 $PYTHON -m pip install -r "$INSTALL_DIR/requirements.txt" --quiet
 $PYTHON -m compileall "$INSTALL_DIR" -q
-echo -e "      Dependencies installed and .pyc compiled."
 
-# ── Step 6: Lock down permissions ─────────────────────────────────────────────
-echo -e "${GREEN}[6/7] Applying access restrictions...${NC}"
+log "[6/10] Applying access restrictions..."
 chown -R root:root "$INSTALL_DIR"
 chmod -R 700 "$INSTALL_DIR"
-echo -e "      Owner: root:root | Permissions: 700 (users get Permission denied)"
+log "    Owner: root:root | Permissions: 700" "$GREEN"
 
-# ── Step 7: Register systemd service ──────────────────────────────────────────
-echo -e "${GREEN}[7/7] Registering systemd service '$SERVICE_NAME'...${NC}"
-
-systemctl stop    $SERVICE_NAME 2>/dev/null || true
-systemctl disable $SERVICE_NAME 2>/dev/null || true
-
-AGENT_SCRIPT="$INSTALL_DIR/agent/agent.py"
-ENV_FILE="$INSTALL_DIR/.env"
-
+log "[7/10] Registering systemd service '$SERVICE_NAME'..."
+rm -f /etc/systemd/system/${SERVICE_NAME}.service
 cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
 Description=SOC Platform Monitoring Agent
@@ -123,12 +182,12 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=$INSTALL_DIR
-EnvironmentFile=$ENV_FILE
-ExecStart=$PYTHON $AGENT_SCRIPT
+EnvironmentFile=$INSTALL_DIR/.env
+ExecStart=$PYTHON $INSTALL_DIR/agent/agent.py
 Restart=always
 RestartSec=5
-StandardOutput=journal
-StandardError=journal
+StandardOutput=null
+StandardError=null
 SyslogIdentifier=$SERVICE_NAME
 
 [Install]
@@ -136,24 +195,17 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable  $SERVICE_NAME
+systemctl enable $SERVICE_NAME
 systemctl restart $SERVICE_NAME
 
-# ── Verify ────────────────────────────────────────────────────────────────────
-echo -e "${GREEN}[Verify] Checking service status...${NC}"
+log "[8/10] Checking manager connectivity..."
+if nc -zv "$MANAGER_IP" 9000 -w 3 2>/dev/null; then
+    log "    Reachable ✓" "$GREEN"
+fi
+
+log "[9/10] Verification..."
 sleep 2
 systemctl status $SERVICE_NAME --no-pager || true
 
-echo ""
-echo -e "${GREEN}✅ SOC Agent installed.${NC}"
-echo -e "   Path     : $INSTALL_DIR (chmod 700 root:root)"
-echo -e "   Service  : systemd $SERVICE_NAME — auto-start + auto-restart"
-echo -e "   Updates  : agent pulls from GitHub on every boot"
-echo ""
-echo -e "${YELLOW}Commands:${NC}"
-echo "  sudo systemctl status  $SERVICE_NAME"
-echo "  sudo systemctl stop    $SERVICE_NAME   ← root only"
-echo "  sudo journalctl -u     $SERVICE_NAME -f"
-echo ""
-echo -e "${YELLOW}Permission test (run as regular user — should fail):${NC}"
-echo "  ls $INSTALL_DIR   ← expected: Permission denied"
+ROLLED_BACK=true
+log "✅ SOC Agent installed successfully." "$GREEN"
