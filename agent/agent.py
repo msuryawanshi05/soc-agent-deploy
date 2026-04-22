@@ -9,14 +9,25 @@ CURRENT_DIR = os.path.dirname(__file__)
 PROJECT_ROOT = os.path.join(CURRENT_DIR, "..")
 sys.path.append(CURRENT_DIR)
 sys.path.append(PROJECT_ROOT)
+from shared.logger import get_logger
+logger = get_logger("Agent")
+from shared.config import (
+    MANAGER_HOST,
+    MANAGER_PORT,
+    AGENT_ID,
+    AGENT_HOSTNAME,
+    AGENT_SEND_INTERVAL,
+import os
+import sys
+import time
+import json
+import platform
+import socket
 
-# ── Stealth: rename process so it doesn't appear as "python" in ps/Task Manager ──
-try:
-    import setproctitle
-    setproctitle.setproctitle("system-monitor-svc")
-except Exception:
-    pass   # setproctitle not installed — silently skip
-
+CURRENT_DIR = os.path.dirname(__file__)
+PROJECT_ROOT = os.path.join(CURRENT_DIR, "..")
+sys.path.append(CURRENT_DIR)
+sys.path.append(PROJECT_ROOT)
 from shared.logger import get_logger
 logger = get_logger("Agent")
 from shared.config import (
@@ -65,7 +76,9 @@ class Agent:
     def __init__(self):
         self.agent_id = os.getenv("AGENT_ID", AGENT_ID)
         self.hostname = os.getenv("AGENT_HOSTNAME", AGENT_HOSTNAME)
-        self.manager_host = os.getenv("MANAGER_HOST", MANAGER_HOST)
+        self.manager_host = os.getenv("MANAGER_HOST", "127.0.0.1")
+        if self.manager_host == "0.0.0.0":
+            self.manager_host = "127.0.0.1"
         self.manager_port = int(os.getenv("MANAGER_PORT", MANAGER_PORT))
         self.send_interval = int(os.getenv("AGENT_SEND_INTERVAL", AGENT_SEND_INTERVAL))
         self.heartbeat_interval = int(os.getenv("AGENT_HEARTBEAT_INTERVAL", AGENT_HEARTBEAT_INTERVAL))

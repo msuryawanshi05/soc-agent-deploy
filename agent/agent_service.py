@@ -22,10 +22,12 @@ import servicemanager
 
 
 class SOCAgentService(win32serviceutil.ServiceFramework):
-    # Generic names — do not reveal purpose to regular users
-    _svc_name_         = "WinSvcHelper"
-    _svc_display_name_ = "Windows Service Helper"
-    _svc_description_  = "Provides background system maintenance and monitoring services."
+    _svc_name_         = "SOCAgent"
+    _svc_display_name_ = "SOC Agent"
+    _svc_description_  = (
+        "Security Operations Center Monitoring Agent — "
+        "collects and forwards security events to the SOC Manager."
+    )
 
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
@@ -68,29 +70,22 @@ class SOCAgentService(win32serviceutil.ServiceFramework):
                     env.setdefault(key.strip(), val.strip())
         return env
 
-    def _get_pythonw(self) -> str:
-        """Return pythonw.exe path if available (no console window on Windows)."""
-        candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-        return candidate if os.path.isfile(candidate) else sys.executable
-
     def _run_agent(self):
         # agent_service.py sits in  <project_root>/agent/
         # agent.py            sits in  <project_root>/agent/
         service_dir  = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(service_dir)
         agent_script = os.path.join(service_dir, "agent.py")
-        # Use pythonw.exe — runs with no console window visible to any user
-        python_exe   = self._get_pythonw()
+        python_exe   = sys.executable   # never hardcoded
 
         env = self._build_env(project_root)
 
         self._process = subprocess.Popen(
             [python_exe, agent_script],
-            cwd=project_root,
+            cwd=project_root,           # so dotenv lookup finds .env at root
             env=env,
-            stdout=subprocess.DEVNULL,   # no output visible anywhere
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
 
         # Block here until SvcStop() signals us
