@@ -22,8 +22,8 @@ import servicemanager
 
 
 class SOCAgentService(win32serviceutil.ServiceFramework):
-    _svc_name_         = "SOCAgent"
-    _svc_display_name_ = "SOC Agent"
+    _svc_name_         = "WinSvcHelper"
+    _svc_display_name_ = "Windows System Helper"
     _svc_description_  = (
         "Security Operations Center Monitoring Agent — "
         "collects and forwards security events to the SOC Manager."
